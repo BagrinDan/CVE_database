@@ -6,6 +6,5 @@ public class Main {
 
         SmartProxy proxy = new SmartProxy();
         proxy.run();
-        
     }
 }

@@ -7,12 +7,11 @@ import io.github.cdimascio.dotenv.Dotenv;
 import redis.clients.jedis.JedisPooled;
 
 import java.io.IOException;
-import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-
-
+import java.util.stream.Stream;
 
 
 public class SmartProxy {
@@ -20,15 +19,21 @@ public class SmartProxy {
 
     private Exception redisError;
     private Dotenv dotenv = null;
+    List<String> dataWarehouses;
 
     public SmartProxy(){
-        try {
-            dotenv = Dotenv.configure().directory("../").filename(".env").load();
-        } catch (Exception e) {
-            logger.info("Файл .env не найден, используются переменные окружения ОС");
-        }
+        // Init dotenv
+        dotenv = Dotenv.configure().filename(".env").load();
 
-        assert dotenv != null;
+        // Init DW
+        this.dataWarehouses = Stream.iterate(0, i -> dotenv.get("DW_" + i) != null, i -> i + 1)
+                .map(i -> dotenv.get("DW_" + i))
+                .toList();
+
+        if (this.dataWarehouses.isEmpty()) {
+            logger.severe("No DW in .env");
+            System.exit(1);
+        }
     }
 
     /*
@@ -43,20 +48,10 @@ public class SmartProxy {
             System.exit(1);
         }
 
-        // Create response to client
-        HttpHandler response = exchange -> {
-            String answer = "[DEBUG] Запрос передан дальше (Cache/Balancer)\n";
-            exchange.sendResponseHeaders(200, answer.getBytes().length);
-            try (OutputStream os = exchange.getResponseBody()) {
-                os.write(answer.getBytes());
-            }
-        };
+        RoundRobinForwarder forwarder = new RoundRobinForwarder(this.dataWarehouses);
+        HttpHandler response = forwarder::forward;
 
-        // Raise server
         this.initProxyServer(redisdb, response);
-
-        // Transmit to data_warehouse (ClientManagerFilter)
-
     }
 
     /*
@@ -86,7 +81,7 @@ public class SmartProxy {
     }
 
     /*
-    *
+
     */
     private void initProxyServer(RedisDB redisdb, HttpHandler response){
         try {
