@@ -1,20 +1,28 @@
-package org.example;
+package org.example.controller;
 
 
-import com.sun.net.httpserver.HttpHandler;
+import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.github.cdimascio.dotenv.Dotenv;
+import org.example.repo.CacheDatabase;
+import org.example.repo.RedisDB;
+import org.example.models.DwResponse;
+import org.example.repo.ResponseCache;
+import org.example.service.RoundRobinForwarder;
 import redis.clients.jedis.JedisPooled;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Stream;
 
 
-public class SmartProxy {
+
+public class SmartProxy implements Proxy {
     private static final Logger logger = Logger.getLogger(SmartProxy.class.getName());
 
     private Exception redisError;
@@ -41,32 +49,38 @@ public class SmartProxy {
     */
     public void run() {
         // Redis
-        RedisDB redisdb = initRedisDB();
+        CacheDatabase redis = initRedisDB();
 
-        if (redisdb == null) {
+        if (redis == null) {
             logger.severe("Cant connect to redis. " + (redisError != null ? redisError.getMessage() : ""));
             System.exit(1);
         }
 
-        RoundRobinForwarder forwarder = new RoundRobinForwarder(this.dataWarehouses);
-        HttpHandler response = forwarder::forward;
+        // Caching
+        int cacheDbNumber = Integer.parseInt(dotenv.get("REDIS_CACHE_DB", "1"));
+        long ttl = Long.parseLong(dotenv.get("CACHE_TTL_SECONDS", "30"));
 
-        this.initProxyServer(redisdb, response);
+        RedisDB cacheDb = new RedisDB(redis.getAddress(), redis.getPort(), redis.getPassword(), cacheDbNumber);
+        ResponseCache cache = new ResponseCache(cacheDb.initClient(), ttl);
+
+        RoundRobinForwarder forwarder = new RoundRobinForwarder(this.dataWarehouses);
+
+        this.initProxyServer(redis, forwarder, cache);
     }
 
     /*
         Init Redis Client
     */
-    private RedisDB initRedisDB() {
+    private CacheDatabase initRedisDB() {
         String address = dotenv.get("REDIS_ADDRESS", System.getenv("CAN'T READ ENV"));
         int port = Integer.parseInt(dotenv.get("REDIS_PORT", System.getenv("404")));
         String password = dotenv.get("REDIS_PASSWORD", System.getenv("CAN'T READ ENV"));
         int db = Integer.parseInt(dotenv.get("REDIS_DB", System.getenv("404")));
         logger.info(String.format("Read from env: Address: %s, password: %s, db: %d", address, password, db));
 
-        RedisDB redisdb = new RedisDB(address, port, password, db);
+        CacheDatabase redisdb = new RedisDB(address, port, password, db);
 
-        try (JedisPooled client = redisdb.initRedisClient()) {
+        try (JedisPooled client = redisdb.initClient()) {
             String pingResult = client.ping();
             if ("PONG".equalsIgnoreCase(pingResult)) {
                 return redisdb;
@@ -80,15 +94,12 @@ public class SmartProxy {
         }
     }
 
-    /*
-
-    */
-    private void initProxyServer(RedisDB redisdb, HttpHandler response){
+    private void initProxyServer(CacheDatabase redis, RoundRobinForwarder forwarder, ResponseCache cache){
         try {
             int smartProxyPort = Integer.parseInt(dotenv.get("SMART_PROXY_PORT", System.getenv("CAN'T READ ENV")));
             HttpServer server = HttpServer.create(new InetSocketAddress(smartProxyPort), 0);
 
-            JedisPooled redisClient = redisdb.initRedisClient();
+            JedisPooled redisClient = redis.initClient();
 
             server.createContext("/", exchange -> {
                 String clientIP = exchange.getRemoteAddress().getAddress().getHostAddress();
@@ -99,7 +110,31 @@ public class SmartProxy {
                     logger.log(Level.WARNING, "Ошибка сохранения клиента " + clientIP, e);
                 }
 
-                response.handle(exchange);
+                String method = exchange.getRequestMethod();
+                String accept = exchange.getRequestHeaders().getFirst("Accept");
+                String key = exchange.getRequestURI() + "|" + accept;
+
+                DwResponse result = null;
+                boolean fromCache = false;
+
+                if (method.equals("GET")) {
+                    result = cache.get(key);
+                    fromCache = (result != null);
+                }
+
+                // Не нашли в кэше (или это не GET): идём на DW
+                if (result == null) {
+                    result = forwarder.forward(exchange);
+
+                    if (method.equals("GET") && result.status() == 200) {
+                        cache.put(key, result);
+                    } else if (!method.equals("GET")) {
+                        cache.clear();
+                    }
+                }
+
+                exchange.getResponseHeaders().set("X-Cache", fromCache ? "HIT" : "MISS");
+                sendToClient(exchange, result);
             });
 
             server.setExecutor(null);
@@ -109,6 +144,23 @@ public class SmartProxy {
         } catch (IOException e) {
             logger.log(Level.SEVERE, "Ошибка запуска HTTP сервера", e);
             System.exit(1);
+        }
+    }
+
+    private void sendToClient(HttpExchange exchange, DwResponse response) throws IOException {
+        try (exchange) {
+            if (response.contentType() != null && !response.contentType().isEmpty()) {
+                exchange.getResponseHeaders().set("Content-Type", response.contentType());
+            }
+            byte[] body = response.body().getBytes(StandardCharsets.UTF_8);
+            if (body.length == 0) {
+                exchange.sendResponseHeaders(response.status(), -1);
+                return;
+            }
+            exchange.sendResponseHeaders(response.status(), body.length);
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(body);
+            }
         }
     }
 }

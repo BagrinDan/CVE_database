@@ -1,7 +1,6 @@
-package org.example;
+package org.example.repo;
 
-import lombok.Getter;
-import lombok.Setter;
+
 import redis.clients.jedis.DefaultJedisClientConfig;
 import redis.clients.jedis.HostAndPort;
 import redis.clients.jedis.JedisClientConfig;
@@ -9,9 +8,8 @@ import redis.clients.jedis.JedisPooled;
 
 import java.util.logging.Logger;
 
-@Getter
-@Setter
-public class RedisDB {
+
+public class RedisDB implements CacheDatabase{
     private static final Logger logger = Logger.getLogger(RedisDB.class.getName());
 
     private final String address;
@@ -26,7 +24,7 @@ public class RedisDB {
         this.db = db;
     }
 
-    public JedisPooled initRedisClient() {
+    public JedisPooled initClient() {
         logger.info(String.format("Address: %s, port: %d, password: %s, db: %d", address, port, password, db));
 
         String host = "localhost";
@@ -44,5 +42,18 @@ public class RedisDB {
                 .build();
 
         return new JedisPooled(new HostAndPort(host, port), config);
+    }
+
+    // Getters
+    public String getAddress() {
+        return address;
+    }
+
+    public int getPort() {
+        return port;
+    }
+
+    public String getPassword() {
+        return password;
     }
 }

@@ -1,6 +1,7 @@
-package org.example;
+package org.example.service;
 
 import com.sun.net.httpserver.HttpExchange;
+import org.example.models.DwResponse;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -8,6 +9,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Logger;
@@ -32,37 +34,31 @@ public class RoundRobinForwarder {
         return dataWarehouses.get(index);
     }
 
-    public void forward(HttpExchange exchange) throws IOException {
+    public DwResponse forward(HttpExchange exchange) {
         try {
-            String dataWarehouse = nextDataWarehouse();
-
-            // 1. Collecting address:
-            String url = dataWarehouse + exchange.getRequestURI();
+            String server = nextDataWarehouse();
+            String url = server + exchange.getRequestURI();
             String method = exchange.getRequestMethod();
             byte[] body = exchange.getRequestBody().readAllBytes();
 
-            // 2. Building request to DW
             HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
                     .method(method, body.length == 0
-                        ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofByteArray(body));
-
+                            ? HttpRequest.BodyPublishers.noBody()
+                            : HttpRequest.BodyPublishers.ofByteArray(body));
             copyHeader(exchange, builder, "Accept");
             copyHeader(exchange, builder, "Content-Type");
 
-            logger.info("Transmit " + method + " on " + url);
-
+            logger.info("Отправляю " + method + " на " + url);
             HttpResponse<byte[]> response = client.send(builder.build(), HttpResponse.BodyHandlers.ofByteArray());
 
-            response.headers().firstValue("Content-Type")
-                    .ifPresent(ct -> exchange.getResponseHeaders().set("Content-Type", ct));
-            sendToClient(exchange, response.statusCode(), response.body());
+            return new DwResponse(
+                    response.statusCode(),
+                    response.headers().firstValue("Content-Type").orElse(""),
+                    new String(response.body(), StandardCharsets.UTF_8));
 
-        } catch (IOException | InterruptedException e){
+        } catch (IOException | InterruptedException e) {
             logger.warning("DW недоступен: " + e.getMessage());
-            sendToClient(exchange, 502, "DW server is not available".getBytes());
-
-        } finally {
-            exchange.close();
+            return new DwResponse(502, "text/plain", "DW server is not available");
         }
     }
 
