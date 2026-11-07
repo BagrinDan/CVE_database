@@ -44,6 +44,20 @@ public class RedisDB implements CacheDatabase{
         return new JedisPooled(new HostAndPort(host, port), config);
     }
 
+    public JedisPooled connect() {
+        JedisPooled client = initClient();
+        try {
+            String pong = client.ping();
+            if (!"PONG".equalsIgnoreCase(pong)) {
+                throw new IllegalStateException("Redis ping returned: " + pong);
+            }
+            return client;
+        } catch (RuntimeException e) {
+            client.close();      // не оставляем висящий клиент
+            throw e;
+        }
+    }
+
     // Getters
     public String getAddress() {
         return address;

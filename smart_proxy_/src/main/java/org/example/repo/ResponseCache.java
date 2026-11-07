@@ -24,7 +24,7 @@ public class ResponseCache {
 
         return new DwResponse(
                 Integer.parseInt(data.get("status")),
-                data.get("content-type"),
+                data.get("contentType"),
                 data.get("body"));
     }
 
@@ -36,6 +36,7 @@ public class ResponseCache {
                 "body", response.body()));
         redis.expire(key, ttlSeconds);
     }
+
     public void clear() {
         redis.flushDB();
     }

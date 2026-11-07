@@ -8,6 +8,7 @@ import org.example.repo.CacheDatabase;
 import org.example.repo.RedisDB;
 import org.example.models.DwResponse;
 import org.example.repo.ResponseCache;
+import org.example.service.Forwarder;
 import org.example.service.RoundRobinForwarder;
 import redis.clients.jedis.JedisPooled;
 
@@ -16,6 +17,7 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.Executors;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Stream;
@@ -25,86 +27,76 @@ import java.util.stream.Stream;
 public class SmartProxy implements Proxy {
     private static final Logger logger = Logger.getLogger(SmartProxy.class.getName());
 
-    private Exception redisError;
-    private Dotenv dotenv = null;
-    List<String> dataWarehouses;
+    private final Dotenv dotenv;
+    private final Forwarder forwarder;
+
 
     public SmartProxy(){
         // Init dotenv
         dotenv = Dotenv.configure().filename(".env").load();
 
         // Init DW
-        this.dataWarehouses = Stream.iterate(0, i -> dotenv.get("DW_" + i) != null, i -> i + 1)
+        List<String> dataWarehouses = Stream.iterate(0, i -> dotenv.get("DW_" + i) != null, i -> i + 1)
                 .map(i -> dotenv.get("DW_" + i))
                 .toList();
 
-        if (this.dataWarehouses.isEmpty()) {
+        if (dataWarehouses.isEmpty()) {
             logger.severe("No DW in .env");
             System.exit(1);
         }
+
+        // Init Forwarder
+        this.forwarder = new RoundRobinForwarder(dataWarehouses);
     }
 
     /*
-        Run smart proxy
+        Main method to start smart proxy
     */
     public void run() {
-        // Redis
-        CacheDatabase redis = initRedisDB();
-
-        if (redis == null) {
-            logger.severe("Cant connect to redis. " + (redisError != null ? redisError.getMessage() : ""));
-            System.exit(1);
-        }
-
-        // Caching
-        int cacheDbNumber = Integer.parseInt(dotenv.get("REDIS_CACHE_DB", "1"));
-        long ttl = Long.parseLong(dotenv.get("CACHE_TTL_SECONDS", "30"));
-
-        RedisDB cacheDb = new RedisDB(redis.getAddress(), redis.getPort(), redis.getPassword(), cacheDbNumber);
-        ResponseCache cache = new ResponseCache(cacheDb.initClient(), ttl);
-
-        RoundRobinForwarder forwarder = new RoundRobinForwarder(this.dataWarehouses);
-
-        this.initProxyServer(redis, forwarder, cache);
-    }
-
-    /*
-        Init Redis Client
-    */
-    private CacheDatabase initRedisDB() {
-        String address = dotenv.get("REDIS_ADDRESS", System.getenv("CAN'T READ ENV"));
-        int port = Integer.parseInt(dotenv.get("REDIS_PORT", System.getenv("404")));
-        String password = dotenv.get("REDIS_PASSWORD", System.getenv("CAN'T READ ENV"));
-        int db = Integer.parseInt(dotenv.get("REDIS_DB", System.getenv("404")));
-        logger.info(String.format("Read from env: Address: %s, password: %s, db: %d", address, password, db));
-
-        CacheDatabase redisdb = new RedisDB(address, port, password, db);
-
-        try (JedisPooled client = redisdb.initClient()) {
-            String pingResult = client.ping();
-            if ("PONG".equalsIgnoreCase(pingResult)) {
-                return redisdb;
-            } else {
-                this.redisError = new RuntimeException("Redis ping returned: " + pingResult);
-                return null;
-            }
-        } catch (Exception e) {
-            this.redisError = e;
-            return null;
-        }
-    }
-
-    private void initProxyServer(CacheDatabase redis, RoundRobinForwarder forwarder, ResponseCache cache){
+        JedisPooled clientsDb;
+        ResponseCache cache;
         try {
-            int smartProxyPort = Integer.parseInt(dotenv.get("SMART_PROXY_PORT", System.getenv("CAN'T READ ENV")));
-            HttpServer server = HttpServer.create(new InetSocketAddress(smartProxyPort), 0);
+            clientsDb = initClientsDB();
+            cache = initCache();
+        } catch (Exception e) {
+            logger.severe("Can't connect to Redis: " + e.getMessage());
+            System.exit(1);
+            return;
+        }
 
-            JedisPooled redisClient = redis.initClient();
+        // Transmitting request to DW
+        this.initProxyServer(clientsDb, this.forwarder, cache);
+    }
+
+    private CacheDatabase redisConfig(int db) {
+        return new RedisDB(
+                dotenv.get("REDIS_ADDRESS", "localhost"),
+                Integer.parseInt(dotenv.get("REDIS_PORT", "6379")),
+                dotenv.get("REDIS_PASSWORD", ""),
+                db);
+    }
+
+    private JedisPooled initClientsDB() {
+        int db = Integer.parseInt(dotenv.get("REDIS_CLIENT_DB", "0"));
+        return redisConfig(db).connect();
+    }
+
+    private ResponseCache initCache() {
+        int db = Integer.parseInt(dotenv.get("REDIS_REQUEST_DB", "1"));
+        long ttl = Long.parseLong(dotenv.get("CACHE_TTL_SECONDS", "30"));
+        return new ResponseCache(redisConfig(db).connect(), ttl);
+    }
+
+
+    private void initProxyServer(JedisPooled clientsDb, Forwarder forwarder, ResponseCache cache) {
+        try {
+            int smartProxyPort = Integer.parseInt(dotenv.get("SMART_PROXY_PORT", "8080"));
+            HttpServer server = HttpServer.create(new InetSocketAddress(smartProxyPort), 0);
 
             server.createContext("/", exchange -> {
                 String clientIP = exchange.getRemoteAddress().getAddress().getHostAddress();
                 try {
-                    redisClient.setex("client:" + clientIP, 300, String.valueOf(System.currentTimeMillis()));
+                    clientsDb.setex("client:" + clientIP, 300, String.valueOf(System.currentTimeMillis()));
                     logger.info("Подключение клиента " + clientIP + " зафиксировано");
                 } catch (Exception e) {
                     logger.log(Level.WARNING, "Ошибка сохранения клиента " + clientIP, e);
@@ -122,7 +114,6 @@ public class SmartProxy implements Proxy {
                     fromCache = (result != null);
                 }
 
-                // Не нашли в кэше (или это не GET): идём на DW
                 if (result == null) {
                     result = forwarder.forward(exchange);
 
@@ -137,11 +128,11 @@ public class SmartProxy implements Proxy {
                 sendToClient(exchange, result);
             });
 
-            server.setExecutor(null);
+            server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
             logger.info("Smart Proxy запущен на порту :" + smartProxyPort);
             server.start();
 
-        } catch (IOException e) {
+        } catch (IOException  e) {
             logger.log(Level.SEVERE, "Ошибка запуска HTTP сервера", e);
             System.exit(1);
         }

@@ -4,7 +4,6 @@ import com.sun.net.httpserver.HttpExchange;
 import org.example.models.DwResponse;
 
 import java.io.IOException;
-import java.io.OutputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -14,7 +13,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Logger;
 
-public class RoundRobinForwarder {
+public class RoundRobinForwarder implements Forwarder{
     private static final Logger logger = Logger.getLogger(RoundRobinForwarder.class.getName());
 
     private final List<String> dataWarehouses;
@@ -62,22 +61,10 @@ public class RoundRobinForwarder {
         }
     }
 
-
     private void copyHeader(HttpExchange exchange, HttpRequest.Builder builder, String name) {
         String value = exchange.getRequestHeaders().getFirst(name);
         if (value != null) {
             builder.header(name, value);
-        }
-    }
-
-    private void sendToClient(HttpExchange exchange, int status, byte[] body) throws IOException {
-        if (body.length == 0) {
-            exchange.sendResponseHeaders(status, -1);
-            return;
-        }
-        exchange.sendResponseHeaders(status, body.length);
-        try (OutputStream os = exchange.getResponseBody()) {
-            os.write(body);
         }
     }
 }
