@@ -10,7 +10,6 @@ import org.example.models.DwResponse;
 import org.example.repo.ResponseCache;
 import org.example.service.Forwarder;
 import org.example.service.RoundRobinForwarder;
-import org.slf4j.LoggerFactory;
 import redis.clients.jedis.JedisPooled;
 
 import java.io.IOException;
