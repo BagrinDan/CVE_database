@@ -8,4 +8,15 @@ export default defineConfig({
     react(),
     babel({ presets: [reactCompilerPreset()] })
   ],
+  server: {
+    // Smart proxy nu trimite antete CORS, așa că browserul vorbește cu Vite,
+    // iar Vite redirecționează /api/* către smart proxy (portul 8080).
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, ''),
+      },
+    },
+  },
 })

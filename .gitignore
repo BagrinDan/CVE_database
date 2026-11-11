@@ -148,3 +148,6 @@ replay_pid*
 
 
 .env
+
+.claude/
+.vs/
