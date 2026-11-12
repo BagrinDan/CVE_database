@@ -129,9 +129,7 @@ public class SmartProxy implements Proxy {
             exchange.getResponseHeaders().set("X-Cache", fromCache ? "HIT" : "MISS");
             sendToClient(exchange, result);
         } catch (Exception e){
-            logger.log(Level.SEVERE, "ERROR | HandleRequest", e);
-            // Fără asta clientul rămâne agățat la nesfârșit
-            sendToClient(exchange, new DwResponse(500, "text/plain", "Smart proxy error: " + e));
+            logger.info("ERROR | HandleRequest: {}");
         }
     }
 

@@ -57,4 +57,17 @@ public class RedisDB implements CacheDatabase{
             throw e;
         }
     }
+
+    // Getters
+    public String getAddress() {
+        return address;
+    }
+
+    public int getPort() {
+        return port;
+    }
+
+    public String getPassword() {
+        return password;
+    }
 }

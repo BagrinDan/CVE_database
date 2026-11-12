@@ -1,15 +1,17 @@
 package com.example.data_warehouse.service;
 
+import java.util.List;
+import java.util.Set;
+import java.util.regex.Pattern;
+
+import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
 import com.example.data_warehouse.exception.ApiException;
 import com.example.data_warehouse.models.Cve;
 import com.example.data_warehouse.models.CvePage;
 import com.example.data_warehouse.repo.CveRepository;
-import org.springframework.dao.OptimisticLockingFailureException;
-import org.springframework.stereotype.Service;
-
-import java.util.List;
-import java.util.Set;
-import java.util.regex.Pattern;
 
 
 
@@ -26,6 +28,7 @@ public class CveServiceImpl implements CveService {
     }
 
     /** PUT: добавить новую запись. */
+    @Transactional
     public Cve add(Cve cve) {
         validate(cve);
         if (repo.existsById(cve.id())) {
@@ -36,12 +39,15 @@ public class CveServiceImpl implements CveService {
     }
 
     /** GET одной записи. */
+    
+    @Transactional(readOnly = true)     // чтение -> replica
     public Cve get(String id) {
         return repo.findById(id)
                 .orElseThrow(() -> new ApiException(404, "CVE not found: " + id));
     }
 
     /** GET списка (страница). */
+    @Transactional(readOnly = true)  
     public CvePage getPage(int offset, int limit) {
         if (offset < 0) {
             throw new ApiException(400, "offset must be >= 0");
@@ -54,6 +60,7 @@ public class CveServiceImpl implements CveService {
     }
 
     /** POST: изменить существующую запись. */
+    @Transactional
     public Cve update(String id, Cve cve) {
         validate(cve);
         if (!id.equals(cve.id())) {
